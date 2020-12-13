@@ -14,18 +14,11 @@ def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
 
     # load Data
-    if cfg.is_train:
-        path_csv_train = pathlib.Path(__file__).parent.parent / 'data' / 'sales_train_train.csv'
-        path_csv_valid = pathlib.Path(__file__).parent.parent / 'data' / 'sales_train_valid.csv'
-        path_csv_test = None  # pathlib.Path(__file__).parent.parent / 'data' / 'test.csv'
-    else:
-        path_csv_train = pathlib.Path(__file__).parent.parent / 'data' / 'sales_train.csv'
-        path_csv_valid = pathlib.Path(__file__).parent.parent / 'data' / 'sales_train_valid.csv'  # dummy valid
-        path_csv_test = pathlib.Path(__file__).parent.parent / 'data' / 'test.csv'
-    ds_train = Dataset(path_csv_train, is_train=True)
-    ds_valid = Dataset(path_csv_valid, is_train=True)
+    ds_test = Dataset(use_testcsv=True) # dateblock_target=34
+    ds_valid = Dataset(use_testcsv=False, dateblock_target=33)
+    ds_train = Dataset(use_testcsv=False, dateblock_target=32 if cfg.do_eval_internally else 33)
 
-    # calculate features
+    # calc features
     ds_train.calc_features()
     ds_valid.calc_features()
 
@@ -45,8 +38,7 @@ def main(cfg: DictConfig):
               )
 
     # infer for test
-    if cfg.is_train:
-        ds_test = Dataset(path_csv_test, is_train=False)
+    if not cfg.do_eval_internally:
         ds_test.calc_features()
 
         X_test, _ = ds_test.get_Xy()

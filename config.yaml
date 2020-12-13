@@ -1,3 +1,3 @@
-is_train: True # is True, uses internal validation
+do_eval_internally: True # is True, uses internal validation
 model:
     param1: 1
