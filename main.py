@@ -31,11 +31,13 @@ def main(cfg: DictConfig):
     # train model
     X_train, y_train = ds_train.get_Xy()
     X_valid, y_valid = ds_valid.get_Xy()
-    idx_col_categorical = [1 if t == 'object' else 0 for t in X_train.dtypes]
+    cat_features = np.where(X_valid.dtypes != float)[0]
+    print(X_valid.dtypes)
     model.fit(X_train, y_train,
               eval_set=(X_valid, y_valid),
-              cat_features=idx_col_categorical,
+              cat_features=cat_features,
               )
+    print(X_train.dtypes)
 
     # infer for test
     if not cfg.do_eval_internally:

@@ -5,6 +5,13 @@ import pathlib
 
 
 @functools.lru_cache(maxsize=None)
+def read_csv(path_csv):
+    assert pathlib.Path(path_csv).is_file()
+    df = pd.read_csv(path_csv)
+    return df
+
+
+@functools.lru_cache(maxsize=None)
 def parse_train():
     """
     Parses the sales_train.csv
@@ -12,8 +19,7 @@ def parse_train():
     :return: Dataframe with columns [date, dateblocknum, shop_id, item_id, item_cnt_month]
     """
     path_csv = pathlib.Path('/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv')
-    assert path_csv.is_file()
-    df = pd.read_csv(path_csv)
+    df = read_csv(path_csv)
 
     cols = ['date', 'date_block_num', 'shop_id', 'item_id']  # dropping item_price!
     df = df.groupby(cols)['item_cnt_day'].sum()
@@ -22,6 +28,7 @@ def parse_train():
     # add new columns
     df['year'] = df['date'].str.slice(start=6).astype(int)
     df['month'] = df['date'].str.slice(start=3, stop=5).astype(int)
+    df.drop('date', axis=1, inplace=True)
 
     # clip values to [0,20]. Otherwise very different metrics compared to leaderboard!
     df['item_cnt_month'] = np.clip(df['item_cnt_day'].values, 0, 20)  # clip to [0,20]
@@ -91,15 +98,57 @@ class Dataset:
         return X, y
 
     def calc_features(self):
+        print("Calculating features")
+
         # get target dateblock
         dateblock_target = self.df['date_block_num'].unique().tolist()
         assert len(dateblock_target) == 1, "somehow several target dateblocks?!"
         dateblock_target = dateblock_target[0]
 
-        # load all features BEFORE target month
+        # load only data BEFORE target month
         dftrain = parse_train()
         mask_before = dftrain['date_block_num'] < dateblock_target
         dftrain = dftrain.loc[mask_before, :]
+        dftrain['date_block_num'] -= dateblock_target  # convert dateblocknum into relative time
 
-        # for each item_ID, get sales in last 1,3,6,12,24 months
-        dftrain['date_block_num'] -= dateblock_target
+        ### NEW FEATURES
+        # add sales in last 1,3,6,12,24 months
+        # for n in [1, 3, 6]:
+        #     mask_time = dftrain['date_block_num'] >= -n
+        #     tmp = dftrain.loc[mask_time, :].groupby('item_id')['item_cnt_month'].mean()
+        #     self.df['nper_item_{}months'.format(n)] = self.df['item_id'].map(tmp)
+        #     self.df['nper_item_{}months'.format(n)] = self.df['nper_item_{}months'.format(n)].astype(float)
+        #     self.df['nper_item_{}months'.format(n)].fillna(value=-1, inplace=True)
+
+        # add category
+        path_csv_items = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/items.csv'
+        dfitems = read_csv(path_csv_items)
+        dfitems = dfitems.set_index('item_id')
+        self.df['item_cat'] = self.df['item_id'].map(dfitems['item_category_id'])
+
+        # add sales per item category in last 1,3,6,12,24 months
+        # dftrain['item_cat'] = dftrain['item_id'].map(dfitems['item_category_id'])
+        # for n in [1, 2, 3, 6]:
+        #     mask_time = dftrain['date_block_num'] >= -n
+        #     tmp = dftrain.loc[mask_time, :].groupby('item_cat')['item_cnt_month'].mean()
+        #     self.df['nper_itemcat_{}months'.format(n)] = self.df['item_cat'].map(tmp)
+
+        # add sales per shop_id
+        for n in [1, 2, 3, 6]:
+            mask_time = dftrain['date_block_num'] >= -n
+            tot = dftrain.loc[mask_time, :]['item_cnt_month'].mean()
+            tmp = dftrain.loc[mask_time, :].groupby('shop_id')['item_cnt_month'].mean() / tot
+            self.df['nper_shop_{}months'.format(n)] = self.df['shop_id'].map(tmp)
+
+        # add item_price
+        # path_csv_sales = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv'
+        # sales = read_csv(path_csv_sales)
+        # tmp = sales.groupby('item_id')['item_price'].mean()
+        # self.df['item_price'] = self.df['item_id'].map(tmp)
+
+        # drop item_id ?
+        self.df.drop('date_block_num', axis=1, inplace=True)
+        # self.df.drop('year', axis=1, inplace=True)
+        # self.df.drop('month', axis=1, inplace=True)
+        self.df.drop('item_id', axis=1, inplace=True)
+        self.df.drop('shop_id', axis=1, inplace=True)
