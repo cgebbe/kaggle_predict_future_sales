@@ -2,38 +2,12 @@ import pandas as pd
 import numpy as np
 import functools
 import pathlib
+import itertools
+import logging
+import final.src.features
+import final.src.features_t_independent
 
-
-@functools.lru_cache(maxsize=None)
-def read_csv(path_csv):
-    assert pathlib.Path(path_csv).is_file()
-    df = pd.read_csv(path_csv)
-    return df
-
-
-@functools.lru_cache(maxsize=None)
-def parse_train():
-    """
-    Parses the sales_train.csv
-
-    :return: Dataframe with columns [date, dateblocknum, shop_id, item_id, item_cnt_month]
-    """
-    path_csv = pathlib.Path('/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv')
-    df = read_csv(path_csv)
-
-    cols = ['date', 'date_block_num', 'shop_id', 'item_id']  # dropping item_price!
-    df = df.groupby(cols)['item_cnt_day'].sum()
-    df = df.reset_index()
-
-    # add new columns
-    df['year'] = df['date'].str.slice(start=6).astype(int)
-    df['month'] = df['date'].str.slice(start=3, stop=5).astype(int)
-    df.drop('date', axis=1, inplace=True)
-
-    # clip values to [0,20]. Otherwise very different metrics compared to leaderboard!
-    df['item_cnt_month'] = np.clip(df['item_cnt_day'].values, 0, 20)  # clip to [0,20]
-    df.drop('item_cnt_day', axis=1, inplace=True)
-    return df
+logger = logging.getLogger(__name__)
 
 
 class Dataset:
@@ -41,8 +15,10 @@ class Dataset:
         # init dataframe
         if use_testcsv:
             self.df = self.define_targets_from_test()
+            self.dateblock_target = 34
         else:
             self.df = self.define_targets_from_train(dateblock_target)
+            self.dateblock_target = dateblock_target
 
         # make sure that columns are the same!
         cols = ['date_block_num', 'year', 'month', 'shop_id', 'item_id']  # dropping item_price!
@@ -63,6 +39,11 @@ class Dataset:
         df['date_block_num'] = 34
         df['year'] = 2015
         df['month'] = 11
+
+        # check
+        nshops = df['shop_id'].nunique()
+        nitems = df['item_id'].nunique()
+        assert len(df) == nshops * nitems, "all combinations are tested"
         return df
 
     def define_targets_from_train(self, dateblock_target):
@@ -73,10 +54,25 @@ class Dataset:
         """
         path_csv_train = pathlib.Path('/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv')
         assert path_csv_train.is_file()
-        df = parse_train()
+        df = final.src.features_t_independent.parse_train()
         mask_target = df['date_block_num'] == dateblock_target
-        df = df.loc[mask_target, :]
-        return df
+
+        # create new dataframe with all possible shopID and itemID combinations
+        shops = df.loc[mask_target, 'shop_id'].unique().tolist()
+        items = df.loc[mask_target, 'item_id'].unique().tolist()
+        df_new = pd.DataFrame(itertools.product(shops, items), columns=['shop_id', 'item_id'])
+        df_new = df_new.merge(df.loc[mask_target, :], how='left', on=['shop_id', 'item_id'])
+        assert len(df_new) == len(shops) * len(items)
+
+        # fill Nans
+        idx = df.index[mask_target][0]
+        for col in ['date_block_num', 'year', 'month']:
+            value = df.loc[idx, col]
+            df_new[col].fillna(value, inplace=True)
+        df_new['item_cnt_month'].fillna(0, inplace=True)
+        assert df_new.isna().sum().sum() == 0
+
+        return df_new
 
     def get_Xy(self):
         """
@@ -98,57 +94,33 @@ class Dataset:
         return X, y
 
     def calc_features(self):
-        print("Calculating features")
+        logger.info("Calculating features")
 
         # get target dateblock
-        dateblock_target = self.df['date_block_num'].unique().tolist()
-        assert len(dateblock_target) == 1, "somehow several target dateblocks?!"
-        dateblock_target = dateblock_target[0]
+        # columns = ['date_block_num', 'year', 'month', 'shop_id', 'item_id', 'item_cnt_month']
+        nrows, nfeatures = self.df.shape
 
-        # load only data BEFORE target month
-        dftrain = parse_train()
-        mask_before = dftrain['date_block_num'] < dateblock_target
-        dftrain = dftrain.loc[mask_before, :]
-        dftrain['date_block_num'] -= dateblock_target  # convert dateblocknum into relative time
+        # MERGE ON ITEM_ID (items.csv -> sales_train.csv)
+        df_items = final.src.features.parse_items(self.dateblock_target)
+        self.df = self.df.merge(df_items, on='item_id')
+        assert len(self.df) == nrows
 
-        ### NEW FEATURES
-        # add sales in last 1,3,6,12,24 months
-        # for n in [1, 3, 6]:
-        #     mask_time = dftrain['date_block_num'] >= -n
-        #     tmp = dftrain.loc[mask_time, :].groupby('item_id')['item_cnt_month'].mean()
-        #     self.df['nper_item_{}months'.format(n)] = self.df['item_id'].map(tmp)
-        #     self.df['nper_item_{}months'.format(n)] = self.df['nper_item_{}months'.format(n)].astype(float)
-        #     self.df['nper_item_{}months'.format(n)].fillna(value=-1, inplace=True)
+        # MERGE ON ITEM_CAT_ID (item_categories.csv -> items.csv)
+        df_item_cats = final.src.features.parse_item_cats(self.dateblock_target)
+        self.df = self.df.merge(df_item_cats, on='item_category_id')
+        assert len(self.df) == nrows
 
-        # add category
-        path_csv_items = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/items.csv'
-        dfitems = read_csv(path_csv_items)
-        dfitems = dfitems.set_index('item_id')
-        self.df['item_cat'] = self.df['item_id'].map(dfitems['item_category_id'])
+        # MERGE ON SHOP_ID
+        df_shops = final.src.features.parse_shops(self.dateblock_target)
+        self.df = self.df.merge(df_shops, on='shop_id')
+        assert len(self.df) == nrows
 
-        # add sales per item category in last 1,3,6,12,24 months
-        # dftrain['item_cat'] = dftrain['item_id'].map(dfitems['item_category_id'])
-        # for n in [1, 2, 3, 6]:
-        #     mask_time = dftrain['date_block_num'] >= -n
-        #     tmp = dftrain.loc[mask_time, :].groupby('item_cat')['item_cnt_month'].mean()
-        #     self.df['nper_itemcat_{}months'.format(n)] = self.df['item_cat'].map(tmp)
+        # MERGE ON ITEM_ID + SHOP_ID ?!?
+        # ...
 
-        # add sales per shop_id
-        for n in [1, 2, 3, 6]:
-            mask_time = dftrain['date_block_num'] >= -n
-            tot = dftrain.loc[mask_time, :]['item_cnt_month'].mean()
-            tmp = dftrain.loc[mask_time, :].groupby('shop_id')['item_cnt_month'].mean() / tot
-            self.df['nper_shop_{}months'.format(n)] = self.df['shop_id'].map(tmp)
-
-        # add item_price
-        # path_csv_sales = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv'
-        # sales = read_csv(path_csv_sales)
-        # tmp = sales.groupby('item_id')['item_price'].mean()
-        # self.df['item_price'] = self.df['item_id'].map(tmp)
-
-        # drop item_id ?
-        self.df.drop('date_block_num', axis=1, inplace=True)
+        # DROP ORIGINAL ITEMS?
+        # self.df.drop('date_block_num', axis=1, inplace=True)
         # self.df.drop('year', axis=1, inplace=True)
         # self.df.drop('month', axis=1, inplace=True)
-        self.df.drop('item_id', axis=1, inplace=True)
-        self.df.drop('shop_id', axis=1, inplace=True)
+        # self.df.drop('item_id', axis=1, inplace=True)
+        # self.df.drop('shop_id', axis=1, inplace=True)

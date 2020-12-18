@@ -1,3 +1,6 @@
-do_eval_internally: True # is True, uses internal validation
+do_submit: False # is True, uses internal validation
 model:
-    param1: 1
+  param1: 1
+hydra:
+  run:
+    dir: '../outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'
