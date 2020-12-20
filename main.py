@@ -1,3 +1,4 @@
+import datetime
 import pandas as pd
 import pathlib
 import yaml
@@ -15,6 +16,11 @@ logging.basicConfig(level=logging.INFO)
 
 
 def main():
+    # PARAMS
+    RECALC_TRAIN = False
+    DO_SUBMIT = True
+
+
     # get "raw" training data (precalculated from pickle)
     if False:
         train = define_train()
@@ -30,7 +36,7 @@ def main():
     train = features.calc(train)
 
     # split train into [train,valid] and get X,y
-    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < 33, :])
+    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (33 if not DO_SUBMIT else 34), :])
     Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == 33, :])
 
     # train model
@@ -45,8 +51,8 @@ def main():
 
     # fit model
     logger.info("Fit model")
-    sparsiy_factor=1
-    model.fit(Xtrain[::sparsiy_factor], ytrain[::sparsiy_factor],
+    sparsify_factor=1
+    model.fit(Xtrain[::sparsify_factor], ytrain[::sparsify_factor],
               eval_set=(Xvalid, yvalid),
               cat_features=cat_features,
               # silent=True,
@@ -60,6 +66,36 @@ def main():
                          'importance': model.feature_importances_})
     eval.sort_values(by='importance', ascending=True, inplace=True)
     print(eval)
+
+    # submit
+    if DO_SUBMIT:
+        # calc features for test
+        test = utils.read_csv('test.csv')
+        test['date_block_num'] = 34
+        test['year'] = 2015 - 2000
+        test['month'] = 11
+        test = features.calc(test)
+
+        # get same column order as train
+        train_cols = train.columns.tolist()
+        train_cols.remove('item_cnt_month')
+        test = test.loc[:,train_cols]
+
+        # predict
+        Xtest, _ = _getXy(test)
+        ytest = model.predict(Xtest)
+        ytest = np.clip(ytest, 0, 20)  # clip values to [0,20], same clipping as target values
+        df_test = pd.DataFrame({'ID': test.index,
+                                'item_cnt_month': ytest,
+                                })
+
+        # save submission
+        filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.csv'
+        path_sub = pathlib.Path(__file__).parent.parent / 'submissions' / filename
+        path_sub.parent.mkdir(parents=True, exist_ok=True)
+        df_test.to_csv(path_sub, index=False)
+
+
 
 
 def define_train():
@@ -90,7 +126,6 @@ def define_train():
 
     # combine all dataframes
     train = pd.DataFrame().append(list_new)
-    train = train.iloc[:, [2, 0, 1]]  # change column order
     assert len(train) == nrows
     return train
 
@@ -129,8 +164,12 @@ def fill_train(train):
 
 
 def _getXy(df):
-    y = df['item_cnt_month']
-    X = df.drop('item_cnt_month', axis=1)
+    if 'item_cnt_month' in df.columns:
+        X = df.drop(columns='item_cnt_month')
+        y = df['item_cnt_month']
+    else:
+        X = df
+        y = None
     return X, y
 
 

@@ -28,7 +28,7 @@ def calc_peritem():
     # ncats, nfeatures = X_pca.shape
     # df_add = pd.DataFrame(X_pca, columns=['cat_text{}'.format(i) for i in range(nfeatures)])
     # df = df.join(df_add)
-    df.drop('item_name', axis=1, inplace=True)
+    df = df.drop(columns='item_name')
 
     # return
     print(df.columns)
