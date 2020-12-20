@@ -98,6 +98,7 @@ class Dataset:
 
         # get target dateblock
         # columns = ['date_block_num', 'year', 'month', 'shop_id', 'item_id', 'item_cnt_month']
+        columns_org = self.df.columns
         nrows, nfeatures = self.df.shape
 
         # MERGE ON ITEM_ID (items.csv -> sales_train.csv)
@@ -124,3 +125,6 @@ class Dataset:
         # self.df.drop('month', axis=1, inplace=True)
         # self.df.drop('item_id', axis=1, inplace=True)
         # self.df.drop('shop_id', axis=1, inplace=True)
+
+        # ONLY PICK SELECTED ITEMS
+        # self.df = self.df.loc[:,['item_cnt_month','n_peritem_last1','shop_id','item_id']]

@@ -4,6 +4,7 @@ import final.src.features_t_independent
 
 logger = logging.getLogger(__name__)
 
+
 @functools.lru_cache()
 def parse_train_for_dateblock(dateblock_target):
     dftrain = final.src.features_t_independent.parse_train()
@@ -20,8 +21,8 @@ def parse_items(dateblock_target):
     dftrain = parse_train_for_dateblock(dateblock_target)
     masks = dict()
     masks['-1a'] = dftrain['date_block_num'] == -12
-    for n in [1, 3, 6]:
-        masks['last'.format(n)] = dftrain['date_block_num'] >= -n
+    for n in [1 , 3, 6]:
+        masks['last{}'.format(n)] = dftrain['date_block_num'] >= -n
     for key, mask_time in masks.items():
         n_perid = dftrain.loc[mask_time, :].groupby('item_id')['item_cnt_month'].mean()
         df['n_peritem_{}'.format(key)] = df['item_id'].map(n_perid).astype(float)
@@ -57,10 +58,10 @@ def parse_shops(dateblock_target):
     masks = dict()
     masks['-1a'] = dftrain['date_block_num'] == -12
     for n in [1, 3, 6]:
-        masks['last'.format(n)] = dftrain['date_block_num'] >= -n
+        masks['last{}'.format(n)] = dftrain['date_block_num'] >= -n
     for key, mask_time in masks.items():
         tot = dftrain.loc[mask_time, :]['item_cnt_month'].mean()
         n_perid = dftrain.loc[mask_time, :].groupby('shop_id')['item_cnt_month'].mean() / tot
-        df['n_pershop_'.format(key)] = df['shop_id'].map(n_perid)
+        df['n_pershop_{}'.format(key)] = df['shop_id'].map(n_perid)
 
     return df
