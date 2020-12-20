@@ -4,19 +4,13 @@ import pathlib
 import pandas as pd
 import numpy as np
 import nltk
+import final.src.utils as utils
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.decomposition import TruncatedSVD
 
 logger = logging.getLogger(__name__)
-
-
-@functools.lru_cache(maxsize=None)
-def read_csv(path_csv):
-    assert pathlib.Path(path_csv).is_file()
-    df = pd.read_csv(path_csv)
-    return df
 
 
 @functools.lru_cache()
@@ -26,8 +20,7 @@ def parse_train():
 
     :return: Dataframe with columns [date, dateblocknum, shop_id, item_id, item_cnt_month]
     """
-    path_csv = pathlib.Path('/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/sales_train.csv')
-    df = read_csv(path_csv)
+    df = utils.read_csv('sales_train.csv')
 
     # convert date to month-year
     df['year'] = df['date'].str.slice(start=6).astype(int)
@@ -40,7 +33,7 @@ def parse_train():
     df = df.reset_index()
 
     # clip values to [0,20]. Otherwise very different metrics compared to leaderboard!
-    df['item_cnt_month'] = np.clip(df['item_cnt_day'].values, 0, 20)  # clip to [0,20]
+    df['item_cnt_month'] = df['item_cnt_day'].clip(0, 20)  # clip to [0,20]
     df.drop('item_cnt_day', axis=1, inplace=True)
     return df
 
@@ -48,8 +41,7 @@ def parse_train():
 @functools.lru_cache()
 def parse_item_cats():
     logger.info("Calculating features for item_categories.csv")
-    path = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/item_categories.csv'
-    df = read_csv(path)
+    df = utils.read_csv('item_categories.csv')
 
     # calculate features from category description text and drop original category name
     X_pca = _calc_from_text(df['item_category_name'], nfeatures=5)
@@ -67,8 +59,7 @@ def parse_item_cats():
 @functools.lru_cache()
 def parse_items():
     logger.info("Calculating features for items.csv")
-    path = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/items.csv'
-    df = read_csv(path)
+    df = utils.read_csv('items.csv')
 
     # calculate features from description text and drop original category name
     X_pca = _calc_from_text(df['item_name'], nfeatures=10)
@@ -86,8 +77,7 @@ def parse_items():
 @functools.lru_cache()
 def parse_shops():
     logger.info("Calculating features for shops.csv")
-    path = '/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/shops.csv'
-    df = read_csv(path)
+    df = utils.read_csv('shops.csv')
 
     # calculate features from description text and drop original category name
     X_pca = _calc_from_text(df['shop_name'], nfeatures=5)

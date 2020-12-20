@@ -1,175 +1,137 @@
 import pandas as pd
-import plotly.express as px
-import plotly.io as pio
-import catboost
-import os
 import pathlib
+import yaml
+import tqdm
 import numpy as np
-import datetime
-from final.src.dataset import Dataset
-import hydra
+import pprint
+import catboost
+import functools
 import logging
-from omegaconf import DictConfig, OmegaConf
-
-pio.renderers.default = 'browser'
-
-logging.basicConfig(level=logging.INFO)
+import final.src.features as features
+import final.src.utils as utils
+import pickle
 logger = logging.getLogger(__name__)
-logger.info('setup logger')
+logging.basicConfig(level=logging.INFO)
 
 
-@hydra.main(config_name="config")
-def main(cfg: DictConfig):
-    print(OmegaConf.to_yaml(cfg))
-
-    if cfg.do_submit:
-        ds_test = Dataset(use_testcsv=True)  # dateblock_target=34
-        ds_train = Dataset(use_testcsv=False, dateblock_target=33)
-        model = train(ds_train, ds_train)
-        submit(model, ds_test)
+def main():
+    # get "raw" training data (precalculated from pickle)
+    if False:
+        train = define_train()
+        train = fill_train(train)
+        with open('train.pickle', 'wb') as f:
+            pickle.dump(train, f)
     else:
-        times = sorted(list(range(33, 30, -1)))
-        ds = dict()
-        for i, t in enumerate(times):
-            ds[t] = Dataset(use_testcsv=False, dateblock_target=t)
-            ds[t].calc_features()
-            if i == 0:
-                print(ds[t].df.columns)
+        with open('train.pickle', 'rb') as f:
+            train = pickle.load(f)
+    print(train.head())
 
-        for t in times[1:]:
-            print("=== Evaluating on dateblock {}".format(t))
-            ds_valid = ds[t]
-            ds_train = ds[t - 1]
+    # calc features
+    train = features.calc(train)
 
-            # Simple baseline: What happens if we simply use last month sales? > RMSE of ~2
-            # y_pred = ds_valid.df['n_peritem_last1']
-            # y_true = ds_valid.df['item_cnt_month']
-            # rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-
-            model = train(ds_train, ds_valid)
-            eval_predictions(model, ds_valid, ds_train)
-            # eval_model(model)
-            # model.save_model('catboost/model.cbm')
-
-
-def eval_model(model):
-    """
-    Evaluate model, most useful features, etc...
-
-    :param model: CatBoostRegressor
-    :return:
-    """
-    df = pd.DataFrame({'feature_names': model.feature_names_,
-                       'feature_importance': model.feature_importances_})
-    df.sort_values(by='feature_importance', inplace=True)
-    print(df)
-
-
-def eval_predictions(model, ds_valid, ds_train=None):
-    """
-    Evaluate mode on dataset. Includes plots and KPIs
-
-    :param model: CatBoostRegressor
-    :param ds_valid: dataset
-    :return:
-    """
-    X, y_true = ds_valid.get_Xy()
-    y_pred = model.predict(X)
-    y_pred = np.clip(y_pred, 0, 20)  # clip values to [0,20], same clipping as target values
-
-    #
-    df = ds_valid.df.copy()
-    df['y_true'] = y_true
-    df['y_pred'] = y_pred
-
-    # calc errors
-    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-    print("RMSE={:.3f}".format(rmse))
-    df['abs_err'] = np.abs(y_true - y_pred)
-    df['rel_abs_err'] = np.abs(y_true - y_pred) / y_true
-
-    # ANALYSIS (might be better in jupyter notebook for readers, but primarily for me)
-    if ds_train:
-        # add information: Which valid items exist also in train?
-        items_in_train = set(ds_train.df['item_id'].unique().tolist())
-        items_in_valid = set(ds_valid.df['item_id'].unique().tolist())
-        df['item_in_train'] = ds_valid.df['item_id'].isin(items_in_train)
-        print("{}/{} items in valid exist in train"
-              .format(len(items_in_valid & items_in_train), len(items_in_valid)))
-
-        # > 76% of error come from items, which do exist in train
-        px.histogram(df, y='abs_err', x='item_in_train', histnorm='percent').show()
-
-    # > Error-sum comes 50% from y_true=0, 20% from y_true=1, 5% from y_true=20
-    px.histogram(df, y='abs_err', x='y_true', histnorm='percent').show()
-
-    # > error-sum comes 66% from y_pred < 1.0
-    px.histogram(df, y='abs_err', x='y_pred', histnorm='percent', cumulative=True).show()
-
-    # > Each item contributes at most 1% to total error.
-    #   However, there seems to be correlation with close-by itemIDs! (E.g. 4719+4721 and 6497+6503+6507)
-    #   Check correlation between similar itemIDs
-    px.histogram(df, y='abs_err', x='item_id', histnorm='percent',
-                 nbins=int(df['item_id'].max())).show()
-
-    # > Shops also contribute similiarly to total error.
-    #   Several shops NO sales at all?! --> Double check in EDA
-    #   Only 5 shops with sumerror>3%: 25,27,28,31,42 - Out of 59 shops
-    px.histogram(df, y='abs_err', x='shop_id', histnorm='percent').show()
-
-    # > Median error for y_true=0 is 0.08, seems okay?!
-    px.box(df, y='abs_err', x='y_true').show()
-
-
-def train(ds_train, ds_valid):
-    """
-    Train model on training dataset and directly evaluate on valid
-
-    :param ds_train: train dataset
-    :param ds_valid: valid dataset
-    :return: CatBoostRegressor model
-    """
-    X_valid, y_valid = ds_valid.get_Xy()
-    X_train, y_train = ds_train.get_Xy()
-    cat_features = np.where(X_valid.dtypes != float)[0]
-    # print(X_valid.dtypes)
+    # split train into [train,valid] and get X,y
+    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < 33, :])
+    Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == 33, :])
 
     # train model
+    logger.info("Setup model")
     model = catboost.CatBoostRegressor(random_seed=42,
                                        iterations=100,
                                        loss_function='RMSE',  # MSE not supported?!
-                                       train_dir='catboost'
+                                       train_dir='catboost',
+                                       task_type='GPU',
                                        )
-    model.fit(X_train, y_train,
-              eval_set=(X_valid, y_valid),
+    cat_features = np.where(Xtrain.dtypes != float)[0]
+
+    # fit model
+    logger.info("Fit model")
+    sparsiy_factor=1
+    model.fit(Xtrain[::sparsiy_factor], ytrain[::sparsiy_factor],
+              eval_set=(Xvalid, yvalid),
               cat_features=cat_features,
               # silent=True,
               metric_period=50,
+              # use_best_model=False # mainly to check
               )
-    return model
+
+    # eval model
+    logger.info("Eval model")
+    eval = pd.DataFrame({'name': model.feature_names_,
+                         'importance': model.feature_importances_})
+    eval.sort_values(by='importance', ascending=True, inplace=True)
+    print(eval)
 
 
-def submit(model, ds_test):
+def define_train():
     """
+    Define train dataset, i.e. set of dateblocks, items, shops for training
 
-    :param model:
-    :param ds_test:
-    :return:
+    :return: DataFrame with columns [date_block_num, item_id, shop_id]
     """
-    ds_test.calc_features()
-    X_test, _ = ds_test.get_Xy()
-    y_test = model.predict(X_test)
-    y_test = np.clip(y_test, 0, 20)  # clip values to [0,20], same clipping as target values
-    df_test = pd.DataFrame({'ID': ds_test.df.index.values,
-                            'item_cnt_month': y_test,
-                            })
+    list_new = []
+    df = utils.read_csv('sales_train.csv')
+    dateblocks_unique = df['date_block_num'].unique().tolist()
+    dateblocks_unique.sort()
+    nrows = 0
+    for dt in tqdm.tqdm(dateblocks_unique):
+        # find shops and items with at least one entry in this dataframe
+        mask = df['date_block_num'] == dt
+        shops = df.loc[mask, 'shop_id'].unique().tolist()
+        items = df.loc[mask, 'item_id'].unique().tolist()
+        nrows += len(shops) * len(items)
 
-    # save submission
-    filename = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S") + '.csv'
-    path_sub = pathlib.Path(__file__).parent.parent / 'submissions' / filename
-    path_sub.parent.mkdir(parents=True, exist_ok=True)
-    df_test.to_csv(path_sub, index=False)
-    d = 0
+        # create new dataframe with combination
+        new1 = pd.DataFrame({'j': 0, 'shop_id': sorted(shops)}, dtype=np.uint8)
+        new2 = pd.DataFrame({'j': 0, 'item_id': sorted(items)}, dtype=np.uint16)
+        new = pd.merge(new1, new2, on='j', how='outer')
+        new['date_block_num'] = np.array(dt, dtype=np.uint8)
+        new.drop(columns='j', inplace=True)
+        list_new.append(new)
+
+    # combine all dataframes
+    train = pd.DataFrame().append(list_new)
+    train = train.iloc[:, [2, 0, 1]]  # change column order
+    assert len(train) == nrows
+    return train
+
+
+def fill_train(train):
+    """
+    Adds columns  [year, month, item_cnt_month]
+
+    :param train: DataFrame
+    :return: DataFrame with added columns
+    """
+    nrows_org = len(train)
+
+    # read
+    df = utils.read_csv('sales_train.csv')
+
+    # add month,year to train
+    df['year'] = df['date'].str.slice(start=6).astype(int) - 2000
+    df['month'] = df['date'].str.slice(start=3, stop=5).astype(int)
+    year_per_dateblock = df.groupby('date_block_num')[['year', 'month']].mean()
+    for col in ['month', 'year']:
+        year_per_dateblock[col] = year_per_dateblock[col].astype(np.uint8)
+        train[col] = train['date_block_num'].map(year_per_dateblock[col])
+
+    # add sales per month
+    sales_per_month = df.groupby(['date_block_num', 'shop_id', 'item_id'])['item_cnt_day'].sum()
+    sales_per_month = sales_per_month.reset_index()
+    train = train.merge(sales_per_month, on=['date_block_num', 'shop_id', 'item_id'], how='left')
+    train = train.rename(columns={'item_cnt_day': 'item_cnt_month'})
+    train['item_cnt_month'] = train['item_cnt_month'].fillna(0).clip(lower=0, upper=20)
+    train['item_cnt_month'] = train['item_cnt_month'].astype(np.uint8)
+    assert train.isna().sum().sum() == 0
+
+    assert len(train) == nrows_org
+    return train
+
+
+def _getXy(df):
+    y = df['item_cnt_month']
+    X = df.drop('item_cnt_month', axis=1)
+    return X, y
 
 
 if __name__ == '__main__':
