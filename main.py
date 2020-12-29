@@ -11,6 +11,7 @@ import logging
 import final.src.features as features
 import final.src.utils as utils
 import pickle
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -18,11 +19,11 @@ logging.basicConfig(level=logging.INFO)
 def main():
     # PARAMS
     RECALC_TRAIN = False
+    USE_ONLY_TEST_IDS = False
     DO_SUBMIT = True
 
-
     # get "raw" training data (precalculated from pickle)
-    if False:
+    if RECALC_TRAIN:
         train = define_train()
         train = fill_train(train)
         with open('train.pickle', 'wb') as f:
@@ -32,12 +33,19 @@ def main():
             train = pickle.load(f)
     print(train.head())
 
+    # trim down train
+    if USE_ONLY_TEST_IDS:
+        test = utils.read_csv('test.csv')
+        mask = train['item_id'].isin(test['item_id'])
+        logger.info("Using {}/{} rows".format(sum(mask),len(mask)))
+        train = train.loc[mask, :]
+
     # calc features
     train = features.calc(train)
 
     # split train into [train,valid] and get X,y
-    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (33 if not DO_SUBMIT else 34), :])
     Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == 33, :])
+    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (33 if not DO_SUBMIT else 34), :])
 
     # train model
     logger.info("Setup model")
@@ -51,7 +59,7 @@ def main():
 
     # fit model
     logger.info("Fit model")
-    sparsify_factor=1
+    sparsify_factor = 1
     model.fit(Xtrain[::sparsify_factor], ytrain[::sparsify_factor],
               eval_set=(Xvalid, yvalid),
               cat_features=cat_features,
@@ -72,16 +80,10 @@ def main():
         # calc features for test
         test = utils.read_csv('test.csv')
         test['date_block_num'] = 34
-        test['year'] = 2015 - 2000
-        test['month'] = 11
-        test = features.calc(test)
-
-        # get same column order as train
-        train_cols = train.columns.tolist()
-        train_cols.remove('item_cnt_month')
-        test = test.loc[:,train_cols]
+        test = test.merge(train, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
 
         # predict
+        test = test.loc[:, train.columns]
         Xtest, _ = _getXy(test)
         ytest = model.predict(Xtest)
         ytest = np.clip(ytest, 0, 20)  # clip values to [0,20], same clipping as target values
@@ -94,8 +96,7 @@ def main():
         path_sub = pathlib.Path(__file__).parent.parent / 'submissions' / filename
         path_sub.parent.mkdir(parents=True, exist_ok=True)
         df_test.to_csv(path_sub, index=False)
-
-
+        logger.info("Wrote to {}".format(filename))
 
 
 def define_train():
@@ -105,6 +106,8 @@ def define_train():
     :return: DataFrame with columns [date_block_num, item_id, shop_id]
     """
     list_new = []
+
+    # read train and test
     df = utils.read_csv('sales_train.csv')
     dateblocks_unique = df['date_block_num'].unique().tolist()
     dateblocks_unique.sort()
@@ -127,6 +130,20 @@ def define_train():
     # combine all dataframes
     train = pd.DataFrame().append(list_new)
     assert len(train) == nrows
+    # train = train.iloc[::1000, :]
+
+    # append test dataframe to calculate features for this, too
+    test = utils.read_csv('test.csv')
+    test['date_block_num'] = 34
+    test = test.drop(columns='ID')
+    # test.head()
+    # test['date'] = '01.11.2015'
+    # test['item_price'] = float('NaN')
+    # test['year'] = 2015 - 2000
+    # test['month'] = 11
+    # test['item_cnt_month'] = float('NaN')
+    train = train.append(test, ignore_index=True)
+
     return train
 
 
@@ -146,6 +163,7 @@ def fill_train(train):
     df['year'] = df['date'].str.slice(start=6).astype(int) - 2000
     df['month'] = df['date'].str.slice(start=3, stop=5).astype(int)
     year_per_dateblock = df.groupby('date_block_num')[['year', 'month']].mean()
+    year_per_dateblock.loc[34, :] = [15, 11]
     for col in ['month', 'year']:
         year_per_dateblock[col] = year_per_dateblock[col].astype(np.uint8)
         train[col] = train['date_block_num'].map(year_per_dateblock[col])
@@ -156,20 +174,16 @@ def fill_train(train):
     train = train.merge(sales_per_month, on=['date_block_num', 'shop_id', 'item_id'], how='left')
     train = train.rename(columns={'item_cnt_day': 'item_cnt_month'})
     train['item_cnt_month'] = train['item_cnt_month'].fillna(0).clip(lower=0, upper=20)
-    train['item_cnt_month'] = train['item_cnt_month'].astype(np.uint8)
+    train['item_cnt_month'] = train['item_cnt_month']  # .astype(np.uint8)
     assert train.isna().sum().sum() == 0
-
     assert len(train) == nrows_org
+
     return train
 
 
 def _getXy(df):
-    if 'item_cnt_month' in df.columns:
-        X = df.drop(columns='item_cnt_month')
-        y = df['item_cnt_month']
-    else:
-        X = df
-        y = None
+    X = df.drop(columns='item_cnt_month')
+    y = df['item_cnt_month']
     return X, y
 
 

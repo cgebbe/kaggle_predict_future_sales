@@ -4,7 +4,7 @@ import pathlib
 
 @functools.lru_cache()
 def read_csv(filename,
-             parent_path='/mnt/sda1/projects/git/courses/coursera_win_kaggle/final/data/',
+             parent_path='../data/',
              ):
     """
     Wrapper around pd.read_csv(), but with cache!

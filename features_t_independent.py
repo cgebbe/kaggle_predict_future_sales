@@ -76,20 +76,7 @@ def parse_items():
 
 @functools.lru_cache()
 def parse_shops():
-    logger.info("Calculating features for shops.csv")
-    df = utils.read_csv('shops.csv')
-
-    # calculate features from description text and drop original category name
-    X_pca = _calc_from_text(df['shop_name'], nfeatures=5)
-    ncats, nfeatures = X_pca.shape
-    df_add = pd.DataFrame(X_pca, columns=['cat_text{}'.format(i) for i in range(nfeatures)])
-    df = df.join(df_add)
-    df.drop('shop_name', axis=1, inplace=True)
-
-    # return
-    print(df.columns)
-    print(df.shape)
-    return df
+    pass
 
 
 def _calc_from_text(series,
