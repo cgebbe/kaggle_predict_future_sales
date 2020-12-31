@@ -11,21 +11,111 @@ import logging
 import final.src.features as features
 import final.src.utils as utils
 import pickle
+import hyperopt
+import pprint
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+COLS_FINAL = ['date_block_num',
+              'item_category_id',
+              'item_id',
+              'item_id_firstmonth',
+              'item_id_mean',
+              'item_id_shop_id_firstmonth',
+              'item_id_shop_id_mean',
+              'item_id_shop_id_t-1',
+              'item_id_shop_id_t-2',
+              'item_id_shop_id_t-3',
+              'item_id_shop_id_t-4',
+              'item_id_t-1',
+              'item_id_t-2',
+              'item_id_t-3',
+              'item_id_t-4',
+              'item_text_0',
+              'item_text_1',
+              'item_text_2',
+              'item_text_3',
+              'item_text_4',
+              'item_text_5',
+              'item_text_6',
+              'item_text_7',
+              'item_text_8',
+              'item_text_9',
+              'itemcat_text_0',
+              'itemcat_text_1',
+              'itemcat_text_2',
+              'itemcat_text_3',
+              'itemcat_text_4',
+              'month',
+              'shop_id',
+              'shop_id_firstmonth',
+              'shop_id_mean',
+              'shop_id_t-1',
+              'shop_id_t-2',
+              'shop_id_t-3',
+              'shop_id_t-4',
+              'shop_text0',
+              'shop_text1',
+              'shop_text2',
+              'shop_text3',
+              'shop_text4',
+              'year']
+
 
 def main():
+    # eval_feature_combination()
+    run_with_select_features()
+
+
+def run_with_select_features():
+    df = pd.read_csv('df_eval.csv')
+    df = df.sort_values(by='loss', ascending=True)
+    top1 = df.iloc[0, :]
+    top10 = df.iloc[0:10, :].median(axis=0)
+    all = {c: True for c in COLS_FINAL}
+    func(all)
+
+
+def eval_feature_combination():
+    assert 'item_cnt_month' not in COLS_FINAL
+    space = {c: hyperopt.hp.choice(c, [True, False]) for c in COLS_FINAL}
+    dct = hyperopt.pyll.stochastic.sample(space)
+
+    trials = hyperopt.Trials()
+    best = hyperopt.fmin(
+        fn=func,
+        space=space,
+        algo=hyperopt.tpe.suggest,
+        max_evals=2,
+        trials=trials,
+    )
+    df_eval = pd.concat([pd.DataFrame(trials.results), pd.DataFrame(trials.vals)], axis=1)
+    print(df_eval)
+    df_eval.to_csv('df_eval.csv')
+    pprint.pprint(best)
+
+
+def func(space=None):
     # PARAMS
     RECALC_TRAIN = False
     USE_ONLY_TEST_IDS = False
-    DO_SUBMIT = True
+    DO_SUBMIT = False
 
-    # get "raw" training data (precalculated from pickle)
+    # get training data with features
     if RECALC_TRAIN:
         train = define_train()
         train = fill_train(train)
+
+        # trim down train
+        if USE_ONLY_TEST_IDS:
+            test = utils.read_csv('test.csv')
+            mask = train['item_id'].isin(test['item_id'])
+            logger.info("Using {}/{} rows".format(sum(mask), len(mask)))
+            train = train.loc[mask, :]
+
+        # calc features
+        train = features.calc(train)
         with open('train.pickle', 'wb') as f:
             pickle.dump(train, f)
     else:
@@ -33,24 +123,22 @@ def main():
             train = pickle.load(f)
     print(train.head())
 
-    # trim down train
-    if USE_ONLY_TEST_IDS:
-        test = utils.read_csv('test.csv')
-        mask = train['item_id'].isin(test['item_id'])
-        logger.info("Using {}/{} rows".format(sum(mask),len(mask)))
-        train = train.loc[mask, :]
-
-    # calc features
-    train = features.calc(train)
-
     # split train into [train,valid] and get X,y
     Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == 33, :])
-    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (33 if not DO_SUBMIT else 34), :])
+    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (34 if DO_SUBMIT else 33), :])
+
+    # pick only selected features from X
+    if space is not None:
+        cols_fixed = ['item_cnt_month']
+        cols = sorted(Xtrain.columns.tolist())
+        cols = [c for c in cols if ((c in cols_fixed) or (bool(space[c]) == True))]
+        Xtrain = Xtrain.loc[:, cols]
+        Xvalid = Xvalid.loc[:, cols]
 
     # train model
     logger.info("Setup model")
     model = catboost.CatBoostRegressor(random_seed=42,
-                                       iterations=100,
+                                       iterations=150,
                                        loss_function='RMSE',  # MSE not supported?!
                                        train_dir='catboost',
                                        task_type='GPU',
@@ -64,9 +152,16 @@ def main():
               eval_set=(Xvalid, yvalid),
               cat_features=cat_features,
               # silent=True,
-              metric_period=50,
+              metric_period=25,
               # use_best_model=False # mainly to check
               )
+    res = model.get_best_score()
+    dct = {'train': res['learn']['RMSE'],
+           'val': res['validation']['RMSE'],
+           'niter': model.get_best_iteration(),
+           }
+    pprint.pprint(dct)
+    return res['validation']['RMSE']
 
     # eval model
     logger.info("Eval model")

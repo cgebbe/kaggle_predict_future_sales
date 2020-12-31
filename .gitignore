@@ -5,3 +5,4 @@ _old/
 __pycache__/
 *.pickle
 catboost/
+df_eval*

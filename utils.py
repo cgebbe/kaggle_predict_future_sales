@@ -2,7 +2,7 @@ import functools
 import pandas as pd
 import pathlib
 
-@functools.lru_cache()
+# @functools.lru_cache()
 def read_csv(filename,
              parent_path='../data/',
              ):
