@@ -1,11 +1,12 @@
 import pandas as pd
 import gc
-import final.src.features_t_independent as features_t_independent
-import final.src.utils as utils
 import logging
 import tqdm
 import numpy as np
 import sklearn.model_selection
+
+import features_t_independent
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ def calc_sales(train):
                ['item_id', 'shop_id'],
                ]
 
-    # CALC MEAN SALES FROM PREVIOUS MONTHS
+    # GET (MEAN) SALES FROM PREVIOUS MONTHS
     for index in tqdm.tqdm(indexes):
         df = pd.pivot_table(train, values='item_cnt_month', aggfunc='mean', index=['date_block_num'] + index)
         df = df.rename(columns={'item_cnt_month': 't'})
@@ -147,30 +148,46 @@ def calc_sales(train):
             index2 = pd.MultiIndex.from_tuples([(idx[0] - trel, *idx[1:]) for idx in df.index])
             df['t-{}'.format(trel)] = df['t'].reindex(index=index2).values
         df.drop(columns='t', inplace=True)
+
+        # calculate relative difference in sales between 1-2 and 2-3
+        eps = 1e-5
+        df.loc[:, 'd_t12'] = 0.5 * (df.loc[:, 't-1'] - df.loc[:, 't-2']) / (df.loc[:, 't-1'] + df.loc[:, 't-2'] + eps)
+        df.loc[:, 'd_t13'] = 0.5 * (df.loc[:, 't-1'] - df.loc[:, 't-3']) / (df.loc[:, 't-1'] + df.loc[:, 't-3'] + eps)
+        df.loc[:, 'd_t23'] = 0.5 * (df.loc[:, 't-2'] - df.loc[:, 't-3']) / (df.loc[:, 't-2'] + df.loc[:, 't-3'] + eps)
         df.columns = ['_'.join(index) + '_' + k for k in df.columns]
         df = df.reset_index()
         df = df.fillna(value=0)  # .astype(np.uint32)
-        train = train.merge(df, on=['date_block_num'] + index)
-        # del df
-        # gc.collect()
+        train = train.merge(df, how='left', on=['date_block_num'] + index)
 
-    # CALC MEAN SALES OF ALL MONTHS (regularized by CV-loop)
+    # CALC MEAN SALES OF ALL PREVIOUS MONTHS (regularized by expanding mean over time)
     for index in indexes:
-        colname = '_'.join(index) + '_mean'
-        kf = sklearn.model_selection.KFold(n_splits=5, shuffle=True)
-        for idx_train, idx_val in kf.split(train.values):
-            df = pd.pivot_table(train.loc[idx_train, :], values='item_cnt_month', aggfunc='mean', index=index)
-            df.columns = [colname]
-            df = df.reset_index()
-            train.loc[idx_val, colname] = train.loc[idx_val, index].merge(df, on=index, how='left')[colname].values
-        print("{} has nans in {}/{} rows".format(colname, train[colname].isna().sum(), len(train)))
+        df = pd.pivot_table(train, values='item_cnt_month', aggfunc='sum', index=index, columns='date_block_num')
+        df = df.fillna(value=0)
+        df = df.cumsum(axis=1) - df  # = cumulative sales of all previous months (NOT including current month!)
+        for col in df.columns:
+            if col == 0:
+                continue  # sales of first month are zero anyhow
+            else:
+                df.loc[:, col] /= col  # divide cumulative sales with number of previous months ~ cumcount
+        df = df.stack()  # reshape mxn into (m*n)x1
+        df = pd.DataFrame(df, columns=['_'.join(index) + '_meansales'])
 
-    # get first month with sales
+        # check that cumulative mean for month34 is equal to total sum divided by number of month -> True
+        # df_check = pd.pivot_table(train, values='item_cnt_month', aggfunc='sum', index=index)
+        # assert df.loc[(22167,34),:].values[0] == (df_check.loc[22167,:].values[0] / 34)
+
+        # merge with train
+        train = train.merge(df, how='left', on=['date_block_num'] + index)
+
+    # count number of month (so far!) with sales
     for index in indexes:
-        colname = '_'.join(index) + '_firstmonth'
-        df = pd.pivot_table(train, values='item_cnt_month', aggfunc='mean', index=index, columns='date_block_num')
-        df[colname] = (df > 0).idxmax(axis='columns')  # gets first occurence where sales>0
-        train = train.merge(df.loc[:, colname], on=index, how='left')
+        df = pd.pivot_table(train, values='item_cnt_month', aggfunc='sum', index=index, columns='date_block_num')
+        df = df.fillna(value=0)
+        df = df > 0
+        df = df.cumsum(axis=1) - df
+        df = df.stack()
+        df = pd.DataFrame(df, columns=['_'.join(index) + '_nmonth_sales'])
+        train = train.merge(df, how='left', on=['date_block_num'] + index)
 
     return train
 
@@ -182,10 +199,6 @@ def calc_price():
     :return:
     """
     df = utils.read_csv('sales_train.csv')
-    price_mean = pd.pivot_table(df, values='item_price', aggfunc='mean', index=['item_id']).rename(
-        columns={'item_price': 'item_price_mean'})
-    # price_median = pd.pivot_table(df, values='item_price', aggfunc='median', index=['item_id']).rename(columns={'item_price':'item_price_median'})
-    # price = pd.concat([price_mean, price_median], axis=1)
 
     # calculate mean price for each item and date_block
     df = pd.pivot_table(df, values='item_price', aggfunc='mean', index=['date_block_num', 'item_id'])
@@ -193,18 +206,13 @@ def calc_price():
     for trel in [1, 2, 3]:
         index2 = pd.MultiIndex.from_tuples([(idx[0] - trel, *idx[1:]) for idx in df.index])
         df['t-{}'.format(trel)] = df['t'].reindex(index=index2).values
+    df.drop(columns='t', inplace=True)
 
     # calculate difference between 1-2 and 2-3
-    df.loc[:, 'delta_t12'] = df.loc[:, 't-1'] - df.loc[:, 't-2']
-    df.loc[:, 'delta_t23'] = df.loc[:, 't-2'] - df.loc[:, 't-3']
-    df = df.drop(columns='t')
+    eps = 1e-5
+    df.loc[:, 'd_t12'] = 0.5 * (df.loc[:, 't-1'] - df.loc[:, 't-2']) / (df.loc[:, 't-1'] + df.loc[:, 't-2'] + eps)
+    df.loc[:, 'd_t13'] = 0.5 * (df.loc[:, 't-1'] - df.loc[:, 't-3']) / (df.loc[:, 't-1'] + df.loc[:, 't-3'] + eps)
+    df.loc[:, 'd_t23'] = 0.5 * (df.loc[:, 't-2'] - df.loc[:, 't-3']) / (df.loc[:, 't-2'] + df.loc[:, 't-3'] + eps)
     df.columns = ['item_price_{}'.format(k) for k in df.columns]
-
-    # calculate price in percent w.r.t. overall mean (could probably be weighted by revenue, but hey...)
-    df = df.reset_index()
-    df = df.merge(price_mean, how='left', on='item_id')
-    cols = [c for c in df.columns if c not in ['date_block_num', 'item_id', 'item_price_mean']]
-    for c in cols:
-        df.loc[:, c] /= df.loc[:, 'item_price_mean']
 
     return df

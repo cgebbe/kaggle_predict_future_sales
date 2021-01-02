@@ -8,11 +8,12 @@ import pprint
 import catboost
 import functools
 import logging
-import final.src.features as features
-import final.src.utils as utils
 import pickle
 import hyperopt
 import pprint
+
+import features
+import utils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -20,10 +21,16 @@ logging.basicConfig(level=logging.INFO)
 COLS_FINAL = ['date_block_num',
               'item_category_id',
               'item_id',
-              'item_id_firstmonth',
-              'item_id_mean',
-              'item_id_shop_id_firstmonth',
-              'item_id_shop_id_mean',
+              'item_id_d_t12',
+              'item_id_d_t13',
+              'item_id_d_t23',
+              'item_id_meansales',
+              'item_id_nmonth_sales',
+              'item_id_shop_id_d_t12',
+              'item_id_shop_id_d_t13',
+              'item_id_shop_id_d_t23',
+              'item_id_shop_id_meansales',
+              'item_id_shop_id_nmonth_sales',
               'item_id_shop_id_t-1',
               'item_id_shop_id_t-2',
               'item_id_shop_id_t-3',
@@ -32,6 +39,12 @@ COLS_FINAL = ['date_block_num',
               'item_id_t-2',
               'item_id_t-3',
               'item_id_t-4',
+              'item_price_d_t12',
+              'item_price_d_t13',
+              'item_price_d_t23',
+              'item_price_t-1',
+              'item_price_t-2',
+              'item_price_t-3',
               'item_text_0',
               'item_text_1',
               'item_text_2',
@@ -42,24 +55,21 @@ COLS_FINAL = ['date_block_num',
               'item_text_7',
               'item_text_8',
               'item_text_9',
-              'itemcat_text_0',
-              'itemcat_text_1',
-              'itemcat_text_2',
-              'itemcat_text_3',
-              'itemcat_text_4',
               'month',
+              'shop_category',
+              'shop_city',
               'shop_id',
-              'shop_id_firstmonth',
-              'shop_id_mean',
+              'shop_id_d_t12',
+              'shop_id_d_t13',
+              'shop_id_d_t23',
+              'shop_id_meansales',
+              'shop_id_nmonth_sales',
               'shop_id_t-1',
               'shop_id_t-2',
               'shop_id_t-3',
               'shop_id_t-4',
-              'shop_text0',
-              'shop_text1',
-              'shop_text2',
-              'shop_text3',
-              'shop_text4',
+              'subtype',
+              'type',
               'year']
 
 
@@ -69,17 +79,33 @@ def main():
 
 
 def run_with_select_features():
-    df = pd.read_csv('df_eval.csv')
+    df = pd.read_csv('df_eval_v3.csv', index_col="Unnamed: 0")
+    first = df.loc[0, :].to_dict()
+    all = {c: 1 for c in COLS_FINAL}
+
+    # drop duplicate rows
+    nrows = len(df)
+    df = df.drop_duplicates()
+
+    # get top performing feature combinations
     df = df.sort_values(by='loss', ascending=True)
-    top1 = df.iloc[0, :]
-    top10 = df.iloc[0:10, :].median(axis=0)
-    all = {c: True for c in COLS_FINAL}
-    func(all)
+    top1 = df.iloc[0, :].to_dict()
+
+    # top10/20/50 yields same median values as top1...
+    top10 = df.iloc[0:10, :].median(axis=0).to_dict()
+    for k in top1.keys():
+        try:
+            if top1[k] != top10[k]:
+                print("{}: top1={}, top10={}".format(k, top1[k], top10[k]))
+        except Exception as err:
+            print(err)
+
+    func(top1)
 
 
 def eval_feature_combination():
     assert 'item_cnt_month' not in COLS_FINAL
-    space = {c: hyperopt.hp.choice(c, [True, False]) for c in COLS_FINAL}
+    space = {c: hyperopt.hp.choice(c, [0, 1]) for c in COLS_FINAL}
     dct = hyperopt.pyll.stochastic.sample(space)
 
     trials = hyperopt.Trials()
@@ -87,7 +113,7 @@ def eval_feature_combination():
         fn=func,
         space=space,
         algo=hyperopt.tpe.suggest,
-        max_evals=2,
+        max_evals=600,
         trials=trials,
     )
     df_eval = pd.concat([pd.DataFrame(trials.results), pd.DataFrame(trials.vals)], axis=1)
@@ -97,71 +123,80 @@ def eval_feature_combination():
 
 
 def func(space=None):
+    assert type(space) == dict
+    print(space)
+
     # PARAMS
     RECALC_TRAIN = False
-    USE_ONLY_TEST_IDS = False
-    DO_SUBMIT = False
+    USE_ONLY_TEST_IDS = True
+    USE_ONLY_FRACTION = False
+    DO_SUBMIT = True
 
     # get training data with features
     if RECALC_TRAIN:
         train = define_train()
+        if USE_ONLY_FRACTION:
+            train = train.iloc[::10, :]
         train = fill_train(train)
-
-        # trim down train
-        if USE_ONLY_TEST_IDS:
-            test = utils.read_csv('test.csv')
-            mask = train['item_id'].isin(test['item_id'])
-            logger.info("Using {}/{} rows".format(sum(mask), len(mask)))
-            train = train.loc[mask, :]
-
-        # calc features
         train = features.calc(train)
         with open('train.pickle', 'wb') as f:
             pickle.dump(train, f)
     else:
         with open('train.pickle', 'rb') as f:
             train = pickle.load(f)
+
+    # pd.options.display.max_columns = 50
     print(train.head())
+    if USE_ONLY_TEST_IDS:
+        test = utils.read_csv('test.csv')
+        mask = train['item_id'].isin(test['item_id'])
+        logger.info("Using {}/{} rows".format(sum(mask), len(mask)))
+        train = train.loc[mask, :]
 
-    # split train into [train,valid] and get X,y
-    Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == 33, :])
-    Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < (34 if DO_SUBMIT else 33), :])
+    # Start evaluation
+    df_eval_tot = pd.DataFrame()
+    idxs_valid = [34] if DO_SUBMIT else [33, 32]
+    for idx_valid in idxs_valid:
+        # split train into [train,valid] and get X,y
+        Xvalid, yvalid = _getXy(train.loc[train['date_block_num'] == (33 if DO_SUBMIT else idx_valid), :])
+        Xtrain, ytrain = _getXy(train.loc[train['date_block_num'] < idx_valid, :])
 
-    # pick only selected features from X
-    if space is not None:
-        cols_fixed = ['item_cnt_month']
-        cols = sorted(Xtrain.columns.tolist())
-        cols = [c for c in cols if ((c in cols_fixed) or (bool(space[c]) == True))]
-        Xtrain = Xtrain.loc[:, cols]
-        Xvalid = Xvalid.loc[:, cols]
+        # pick only selected features from X
+        if space is not None:
+            cols_fixed = ['item_cnt_month']
+            cols = sorted(Xtrain.columns.tolist())
+            cols = [c for c in cols if ((c in cols_fixed) or (bool(space[c]) == True))]
+            Xtrain = Xtrain.loc[:, cols]
+            Xvalid = Xvalid.loc[:, cols]
 
-    # train model
-    logger.info("Setup model")
-    model = catboost.CatBoostRegressor(random_seed=42,
-                                       iterations=150,
-                                       loss_function='RMSE',  # MSE not supported?!
-                                       train_dir='catboost',
-                                       task_type='GPU',
-                                       )
-    cat_features = np.where(Xtrain.dtypes != float)[0]
+        # train model
+        logger.info("Setup model")
+        model = catboost.CatBoostRegressor(random_seed=42,
+                                           iterations=125,
+                                           loss_function='RMSE',  # MSE not supported?!
+                                           train_dir='catboost',
+                                           task_type='GPU',
+                                           )
+        cat_features = np.where(Xtrain.dtypes != float)[0]
 
-    # fit model
-    logger.info("Fit model")
-    sparsify_factor = 1
-    model.fit(Xtrain[::sparsify_factor], ytrain[::sparsify_factor],
-              eval_set=(Xvalid, yvalid),
-              cat_features=cat_features,
-              # silent=True,
-              metric_period=25,
-              # use_best_model=False # mainly to check
-              )
-    res = model.get_best_score()
-    dct = {'train': res['learn']['RMSE'],
-           'val': res['validation']['RMSE'],
-           'niter': model.get_best_iteration(),
-           }
-    pprint.pprint(dct)
-    return res['validation']['RMSE']
+        # fit model
+        logger.info("Fit model")
+        model.fit(Xtrain, ytrain,
+                  eval_set=(Xvalid, yvalid),
+                  cat_features=cat_features,
+                  # silent=True,
+                  metric_period=25,
+                  # use_best_model=False # mainly to check
+                  )
+        res = model.get_best_score()
+        dct = {'train': res['learn']['RMSE'],
+               'val': res['validation']['RMSE'],
+               'niter': model.get_best_iteration(),
+               'idx_valid': idx_valid,
+               }
+        df_eval = pd.DataFrame({k: [v] for k, v in dct.items()})
+        df_eval_tot = df_eval_tot.append(df_eval)
+    print(df_eval_tot)
 
     # eval model
     logger.info("Eval model")
@@ -175,11 +210,14 @@ def func(space=None):
         # calc features for test
         test = utils.read_csv('test.csv')
         test['date_block_num'] = 34
-        test = test.merge(train, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
+        test.loc[test.shop_id == 0, 'shop_id'] = 57
+        test.loc[test.shop_id == 1, 'shop_id'] = 58
+        test.loc[test.shop_id == 10, 'shop_id'] = 11
+        test = test.merge(train, how='left', on=['date_block_num', 'shop_id', 'item_id'])
 
         # predict
-        test = test.loc[:, train.columns]
         Xtest, _ = _getXy(test)
+        Xtest = Xtest.loc[:, Xtrain.columns.tolist()]
         ytest = model.predict(Xtest)
         ytest = np.clip(ytest, 0, 20)  # clip values to [0,20], same clipping as target values
         df_test = pd.DataFrame({'ID': test.index,
@@ -192,6 +230,8 @@ def func(space=None):
         path_sub.parent.mkdir(parents=True, exist_ok=True)
         df_test.to_csv(path_sub, index=False)
         logger.info("Wrote to {}".format(filename))
+
+    return df_eval_tot['val'].mean()
 
 
 def define_train():
@@ -225,7 +265,6 @@ def define_train():
     # combine all dataframes
     train = pd.DataFrame().append(list_new)
     assert len(train) == nrows
-    # train = train.iloc[::1000, :]
 
     # append test dataframe to calculate features for this, too
     test = utils.read_csv('test.csv')

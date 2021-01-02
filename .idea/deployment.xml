@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="cgebbe@192.168.2.111:22" remoteFilesAllowedToDisappearOnAutoupload="false">
+    <serverData>
+      <paths name="cgebbe@192.168.2.111:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/cgebbe/git/coursera/coursera_win_kaggle/final/src" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

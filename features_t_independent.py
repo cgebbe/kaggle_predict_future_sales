@@ -4,7 +4,7 @@ import pathlib
 import pandas as pd
 import numpy as np
 import nltk
-import final.src.utils as utils
+import utils
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
