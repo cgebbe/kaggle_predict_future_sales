@@ -80,7 +80,11 @@ class SklearnInterface(Interface):
         ytest = self.clf.predict(Xtest)
         return ytest
 
-    def encode_features(self, df, tarcol, drop_org=True, cols_to_ignore=None):
+    def encode_features(self, X, y, drop_org=True, cols_to_ignore=None):
+        # concatenate X and y into DataFrame
+        tarcol = y.name
+        df = pd.concat([X, y], axis=1)
+
         # specify columns to encode
         cols_to_encode = df.dtypes.index[df.dtypes != float].tolist()
         if cols_to_ignore:
@@ -95,12 +99,16 @@ class SklearnInterface(Interface):
             # df[:,catcol] = utils.encode_category_using_cumsum(df, catcol, tarcol)
             if drop_org:
                 df.drop(columns=catcol, inplace=True)
+        X = df.drop(columns=tarcol)
 
         # replace remaining nans
-        cols_with_nans = df.columns[df.isna().sum(axis=0).astype(bool)]
+        cols_with_nans = X.columns[X.isna().sum(axis=0).astype(bool)]
         logger.info("Replacing Nans in columns {}".format(cols_with_nans))
-        df.fillna(value=-1, inplace=True)
-        return df, cols_to_encode
+        X.fillna(value=-1, inplace=True)
+
+        # return
+        assert len(X) == len(y)
+        return X
 
 
 class Linear(SklearnInterface):

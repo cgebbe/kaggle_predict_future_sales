@@ -9,6 +9,7 @@ import logging
 import pickle
 import hyperopt
 import pprint
+import sklearn.preprocessing
 
 import data
 import models
@@ -162,11 +163,6 @@ def pipeline(space=None):
         # split train into [train,valid] and get X,y
         df_train = df_data.loc[df_data['date_block_num'] == (33 if DO_SUBMIT else idx_valid), :].copy()
         df_valid = df_data.loc[df_data['date_block_num'] < idx_valid, :].copy()
-
-        # perform mean encoding if necessary
-        if isinstance(model, models.SklearnInterface):
-            df_train, _ = model.encode_features(df_train, tarcol='item_cnt_month', drop_org=True)
-            df_valid, _ = model.encode_features(df_valid, tarcol='item_cnt_month', drop_org=True)
         Xvalid, yvalid = _getXy(df_train)
         Xtrain, ytrain = _getXy(df_valid)
 
@@ -180,6 +176,15 @@ def pipeline(space=None):
                     cols.append(c)
             Xtrain = Xtrain.loc[:, cols]
             Xvalid = Xvalid.loc[:, cols]
+
+        # perform mean encoding if necessary
+        if isinstance(model, models.SklearnInterface):
+            Xtrain = model.encode_features(Xtrain, ytrain, drop_org=True)
+            Xvalid = model.encode_features(Xvalid, yvalid, drop_org=True)
+            cols = Xtrain.columns.tolist()
+            scaler = sklearn.preprocessing.StandardScaler().fit(Xtrain)
+            Xtrain = scaler.transform(Xtrain)
+            Xvalid = scaler.transform(Xvalid)
 
         # train
         dct = model.fit(Xtrain, ytrain, Xvalid, yvalid)
@@ -212,11 +217,13 @@ def pipeline(space=None):
         # apply features from df_data (date_block_num=34)
         if isinstance(model, models.SklearnInterface):
             df_data.loc[df_data.date_block_num == 34, 'item_cnt_month'] = float('NaN')  # to not influence mean encoding
-            df_data, cols_to_encode = model.encode_features(df_data, tarcol='item_cnt_month', drop_org=False)
-            # unencoded columns will be filtered out later automatically
-        df_test = df_test.merge(df_data, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
+            Xdata, ydata = _getXy(df_data)
+            Xdata = model.encode_features(Xdata, ydata, drop_org=False)
+            # unencoded columns will be filtered out later via .loc[:,Xtrain.columns]
+        df_test = df_test.merge(Xdata, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
         Xtest, _ = _getXy(df_test)
-        Xtest = Xtest.loc[:, Xtrain.columns.tolist()]
+        Xtest = Xtest.loc[:, cols]
+        Xtest = scaler.transform(Xtest)
 
         # predict
         ytest = model.predict(Xtest)
@@ -236,8 +243,12 @@ def pipeline(space=None):
 
 
 def _getXy(df):
-    X = df.drop(columns='item_cnt_month')
-    y = df['item_cnt_month']
+    if 'item_cnt_month' in df.columns:
+        X = df.drop(columns='item_cnt_month')
+        y = df['item_cnt_month']
+    else:
+        X = df
+        y = None
     return X, y
 
 
