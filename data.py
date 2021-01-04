@@ -1,23 +1,26 @@
-import pandas as pd
-import gc
+"""
+Defines train and valid dataset. Computes all features.
+"""
 import logging
+import pandas as pd
 import tqdm
 import numpy as np
-import sklearn.model_selection
-
-import features_t_independent
 import utils
 
 logger = logging.getLogger(__name__)
 
 
-def calc(train):
+def generate(sparsify_by=1):
     """
-    Calculates several features given all available data
+    Generates the train, valid and test data including features
 
-    :param train:
-    :return:
+    :return: DataFrame with many columns
     """
+    logger.info("Defining train,valid data")
+    train = define_train()
+    if sparsify_by != 1.0:
+        train = train.iloc[::sparsify_by, :]
+    train = calc_year_month_itemcntmonth(train)
     nrows = len(train)
 
     # fix shop IDs
@@ -25,13 +28,14 @@ def calc(train):
     train.loc[train.shop_id == 1, 'shop_id'] = 58
     train.loc[train.shop_id == 10, 'shop_id'] = 11
 
+    # Calc sales for previous months
+    train = calc_sales(train)
+    assert len(train) == nrows
+
     # Calc price per item and previous months
     df = calc_price()
     train = train.merge(df, how='left', on=['date_block_num', 'item_id'])
     assert len(train) == nrows
-
-    # Calc sales for previous months
-    train = calc_sales(train)
 
     # omit first 4 months because not possible to calculate previous months here (0,1,2,3)
     assert len(train) == nrows
@@ -39,35 +43,116 @@ def calc(train):
     nrows = len(train)
 
     # items.csv
-    df = calc_peritem()
+    df = parse_items_csv()
     train = train.merge(df, how='left', on='item_id')
     assert len(train) == nrows
 
     # item_categories.csv
-    df = calc_peritemcat()
+    df = parse_item_categories_csv()
     train = train.merge(df, how='left', on='item_category_id')
     assert len(train) == nrows
 
     # shop.csv
-    df = calc_pershop()
+    df = parse_shop_csv()
     train = train.merge(df, how='left', on='shop_id')
     assert len(train) == nrows
 
     return train
 
 
-def calc_peritem():
+def define_train():
+    """
+    Define train dataset, i.e. set of dateblocks, items, shops for training
+
+    :return: DataFrame with columns [date_block_num, item_id, shop_id]
+    """
+    list_new = []
+
+    # read train and test
+    df = utils.read_csv('sales_train.csv')
+    dateblocks_unique = df['date_block_num'].unique().tolist()
+    dateblocks_unique.sort()
+    nrows = 0
+    for dt in tqdm.tqdm(dateblocks_unique):
+        # find shops and items with at least one entry in this dataframe
+        mask = df['date_block_num'] == dt
+        shops = df.loc[mask, 'shop_id'].unique().tolist()
+        items = df.loc[mask, 'item_id'].unique().tolist()
+        nrows += len(shops) * len(items)
+
+        # create new dataframe with combination
+        new1 = pd.DataFrame({'j': 0, 'shop_id': sorted(shops)}, dtype=np.uint8)
+        new2 = pd.DataFrame({'j': 0, 'item_id': sorted(items)}, dtype=np.uint16)
+        new = pd.merge(new1, new2, on='j', how='outer')
+        new['date_block_num'] = np.array(dt, dtype=np.uint8)
+        new.drop(columns='j', inplace=True)
+        list_new.append(new)
+
+    # combine all dataframes
+    train = pd.DataFrame().append(list_new)
+    assert len(train) == nrows
+
+    # append test dataframe to calculate features for this, too
+    test = utils.read_csv('test.csv')
+    test['date_block_num'] = 34
+    test = test.drop(columns='ID')
+    # test.head()
+    # test['date'] = '01.11.2015'
+    # test['item_price'] = float('NaN')
+    # test['year'] = 2015 - 2000
+    # test['month'] = 11
+    # test['item_cnt_month'] = float('NaN')
+    train = train.append(test, ignore_index=True)
+
+    return train
+
+
+def calc_year_month_itemcntmonth(train):
+    """
+    Adds columns  [year, month, item_cnt_month]
+
+    :param train: DataFrame
+    :return: DataFrame with added columns
+    """
+    nrows_org = len(train)
+
+    # read
+    df = utils.read_csv('sales_train.csv')
+
+    # add month,year to train
+    df['year'] = df['date'].str.slice(start=6).astype(int) - 2000
+    df['month'] = df['date'].str.slice(start=3, stop=5).astype(int)
+    year_per_dateblock = df.groupby('date_block_num')[['year', 'month']].mean()
+    year_per_dateblock.loc[34, :] = [15, 11]
+    for col in ['month', 'year']:
+        year_per_dateblock[col] = year_per_dateblock[col].astype(np.uint8)
+        train[col] = train['date_block_num'].map(year_per_dateblock[col])
+
+    # add sales per month
+    sales_per_month = df.groupby(['date_block_num', 'shop_id', 'item_id'])['item_cnt_day'].sum()
+    sales_per_month = sales_per_month.reset_index()
+    train = train.merge(sales_per_month, on=['date_block_num', 'shop_id', 'item_id'], how='left')
+    train = train.rename(columns={'item_cnt_day': 'item_cnt_month'})
+    train['item_cnt_month'] = train['item_cnt_month'].fillna(0).clip(lower=0, upper=20)
+    train['item_cnt_month'] = train['item_cnt_month']  # .astype(np.uint8)
+    assert train.isna().sum().sum() == 0
+    assert len(train) == nrows_org
+
+    return train
+
+
+def parse_items_csv():
     """
     Calculates features (item_category_id, item_text_0..9)
 
     :return:
     """
     # Features: item_category_id
-    logger.info("Calculating features for items.csv")
+    logger.info("Parsing items.csv")
     df = utils.read_csv('items.csv')
 
     # Features: item_text_0...9
-    X_pca = features_t_independent._calc_from_text(df['item_name'], nfeatures=10)
+    X_pca = utils.calc_from_text(df['item_name'], nfeatures=10)
     ncats, nfeatures = X_pca.shape
     df_add = pd.DataFrame(X_pca, columns=['item_text_{}'.format(i) for i in range(nfeatures)])
     df = df.join(df_add)
@@ -75,7 +160,7 @@ def calc_peritem():
     return df
 
 
-def calc_peritemcat():
+def parse_item_categories_csv():
     """
     Calculates features (itemcat_text_0...9, ...)
     Taken 99% from https://www.kaggle.com/gordotron85/future-sales-xgboost-top-3
@@ -83,7 +168,7 @@ def calc_peritemcat():
     :param train:
     :return:
     """
-    logger.info("Calculating features for item_categories.csv")
+    logger.info("Parsing item_categories.csv")
     cats = utils.read_csv('item_categories.csv')
 
     # extract type and encode it. Keep only those with at least 5 members
@@ -102,7 +187,7 @@ def calc_peritemcat():
     return cats
 
 
-def calc_pershop():
+def parse_shop_csv():
     """
     Calculates features from shop description [shop_city, shop_category]
     Taken 99% from https://www.kaggle.com/gordotron85/future-sales-xgboost-top-3
@@ -110,7 +195,7 @@ def calc_pershop():
     :param train:
     :return:
     """
-    logger.info("Calculating features for shops.csv")
+    logger.info("Parsing shops.csv")
     df = utils.read_csv('shops.csv').copy()
 
     # split shop name into city and category
@@ -135,6 +220,7 @@ def calc_sales(train):
     :param train: DataFrame
     :return: DataFrame with additional columns
     """
+    logger.info("Calculating features from number of sales")
     indexes = [['item_id'],
                ['shop_id'],
                ['item_id', 'shop_id'],
@@ -198,6 +284,7 @@ def calc_price():
 
     :return:
     """
+    logger.info("Calculating features from price")
     df = utils.read_csv('sales_train.csv')
 
     # calculate mean price for each item and date_block
