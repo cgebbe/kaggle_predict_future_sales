@@ -64,7 +64,7 @@ def predict_using_lin(Xtrain, ytrain, Xvalid, yvalid_true):
     # clf = sklearn.svm.SVR()
     clf = sklearn.linear_model.LinearRegression()
     clf.fit(Xtrain, ytrain)
-    yvalid_pred = clf.predict(Xvalid)
+    yvalid_pred = clf.perform_submission(Xvalid)
     err = np.abs(yvalid_true - yvalid_pred).mean()
     print("error={}".format(err))
     return yvalid_pred
@@ -73,7 +73,7 @@ def predict_using_lin(Xtrain, ytrain, Xvalid, yvalid_true):
 def predict_using_KNN(Xtrain, ytrain, Xvalid, yvalid_true):
     clf = sklearn.neighbors.KNeighborsRegressor()
     clf.fit(Xtrain, ytrain)
-    yvalid_pred = clf.predict(Xvalid)
+    yvalid_pred = clf.perform_submission(Xvalid)
     err = np.abs(yvalid_true - yvalid_pred).mean()
     print("error={}".format(err))
     return yvalid_pred

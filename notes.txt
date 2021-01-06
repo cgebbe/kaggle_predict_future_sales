@@ -1,0 +1,142 @@
+Index(['date', 'date_block_num', 'shop_id', 'item_id', 'item_price', 'item_cnt_day'], dtype='object')
+
+      
+TODO
+	if item_id exists... 
+		nitems/months sold PER item_id in last 1,3,6,12 months + exactly one year ago
+		mean price PER item_ID
+		
+		shop dependency:
+			nsales per item_id in this shop compared to all other shops
+		
+	if NOT
+		mean sales per item_cat
+		mean price per item_cat
+		
+		shop dependency:
+			nsales per item category in this shop compared to all other shops
+		
+	
+LATER
+
+Mean encoding II
+	pay attention to type of mean encoding! Do not overfit!
+	-> see tutorial
+	Options
+		CV loop regularization
+		Smoothing -> (mean(target)*nrows + globalmean*alpha) / (nrows+alpha)
+		Add noise -> 
+		
+	
+	mean monthly_sales per shop_id
+	mean monthly_sales per item
+	mean monthly_sales per shop_id & item
+	
+	more features:
+		total sales per ... 
+
+Hyperparameter tuning
+	-> 
+
+
+Other techniques
+	tree
+	ANN
+	SVM
+	kNN classifier, because I don't understand it well myself!
+	
+	-> How to deal with categorical data (?)
+
+Data leakages?
+	> understanding 
+	-> similarity between categories and shops?
+	-> maybe some dummy predictions with 0,10,20 values to estimate mean?
+
+Check errors in a better way
+	which itemIDs / shopIDs?
+	which counts? rather errors for cnt_true=0/20?
+	Where does error come from?
+
+Hyperparameter tuning (maybe with hyperopt)?
+	Great explanation
+		https://towardsdatascience.com/a-conceptual-explanation-of-bayesian-model-based-hyperparameter-optimization-for-machine-learning-b8172278050f
+
+	Example usage
+		https://medium.com/vooban-ai/hyperopt-tutorial-for-optimizing-neural-networks-hyperparameters-e3102814b919
+	
+		https://towardsdatascience.com/an-example-of-hyperparameter-optimization-on-xgboost-lightgbm-and-catboost-using-hyperopt-12bc41a271e
+
+Find neighbors instead of itemIDs
+	- last sales of neighbor items?!
+	- with correlating sales history
+		- determine linear relation between neighbors and target
+	- last		
+	- with similar description text
+	- neighboring ID (+/-5) ?!
+	
+
+
+=================
+FOR LOG
+=================
+
+Shrink model to first 101 iterations.
+      train       val  niter  idx_valid
+0  0.792134  0.821600     75         33
+0  0.784851  0.774605    125         32
+0  0.787870  0.740409    100         31
+
+
+Data leakage: 
+	https://www.kaggle.com/c/competitive-data-science-predict-future-sales/discussion/79142
+
+
+NN trained for 1 epoch
+	MSE_train   MSE_val     final  idx_valid
+0   1.141329  0.901996  0.901996         30
+1   1.141588  0.939825  0.939825         31
+2   1.110234  1.058964  1.058964         32
+3   1.120934  1.098344  1.098344         33
+4   1.111469  1.081678  1.081678         34
+
+NN trained for 2 epochs
+	MSE_train   MSE_val     final  idx_valid
+0   1.109261  0.887749  0.887749         30
+1   1.092339  0.969996  0.969996         31
+2   1.084839  1.062013  1.062013         32
+3   1.083092  1.098961  1.098961         33
+4   1.075724  1.088172  1.088172         34
+
+
+
+ENSEMBLE
+===================
+
+USING CATBOOST
+
+      train       val  niter     final   err_tot   err_lin   err_cat    err_nn
+0  0.992237  0.885839    100  0.885839  0.885839  0.945464  0.838079  0.867316
+1  0.975656  0.935823     75  0.935823  0.935823  0.990035  0.914972  0.949046
+2  0.961464  1.007111    100  1.007111  1.007111  1.127359  0.971274  1.069296
+3  0.925561  1.073334     25  1.073334  1.073334  1.164663  1.035106  1.106573
+
+USING KNN
+
+
+   MSE_train   MSE_val     final   err_tot   err_lin   err_cat    err_nn
+0   0.815503  0.914489  0.914489  0.914489  0.945464  0.838079  0.867316
+1   0.799336  0.983754  0.983754  0.983754  0.990035  0.914972  0.949046
+2   0.786588  1.045561  1.045561  1.045561  1.127359  0.971274  1.069296
+3   0.762862  1.111709  1.111709  1.111709  1.164663  1.035106  1.106573
+
+
+USING LINEAR
+
+   MSE_train   MSE_val     final   err_tot   err_lin   err_cat    err_nn
+0   0.966911  0.821654  0.821654  0.821654  0.945464  0.838079  0.867316
+1   0.947665  0.895369  0.895369  0.895369  0.990035  0.914972  0.949046
+2   0.924816  0.967582  0.967582  0.967582  1.127359  0.971274  1.069296
+3   0.896600  1.026911  1.026911  1.026911  1.164663  1.035106  1.106573
+
+mean without dataleak
+0.4485405696456535

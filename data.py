@@ -6,16 +6,24 @@ import pandas as pd
 import tqdm
 import numpy as np
 import utils
+import pickle
 
 logger = logging.getLogger(__name__)
 
 
-def generate(sparsify_by=1):
+def generate(sparsify_by=1, use_cache=False):
     """
     Generates the train, valid and test data including features
 
+    :param sparsify_by: Sparsifies rows by this factor
+    :param use_cache: If true, returns last cached result
     :return: DataFrame with many columns
     """
+    if use_cache:
+        with open('train.pickle', 'rb') as f:
+            train = pickle.load(f)
+        return train
+
     logger.info("Defining train,valid data")
     train = define_train()
     if sparsify_by != 1.0:
@@ -56,6 +64,10 @@ def generate(sparsify_by=1):
     df = parse_shop_csv()
     train = train.merge(df, how='left', on='shop_id')
     assert len(train) == nrows
+
+    # store result in cache
+    with open('train.pickle', 'wb') as f:
+        pickle.dump(train, f)
 
     return train
 

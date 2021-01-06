@@ -10,6 +10,7 @@ import pickle
 import hyperopt
 import pprint
 import sklearn.preprocessing
+import tqdm
 
 import data
 import models
@@ -72,12 +73,12 @@ COLS_FINAL = ['date_block_num',
 
 
 def main():
-    # eval_feature_combination()
-    run_once()
+    # find_best_features()
+    run_with_selected_features()
 
 
-def run_once():
-    df = pd.read_csv('df_eval.csv', index_col="Unnamed: 0")
+def run_with_selected_features():
+    df = pd.read_csv('df_eval_v3.csv', index_col="Unnamed: 0")
     first = df.loc[0, :].to_dict()
     all = {c: 1 for c in COLS_FINAL}
 
@@ -98,17 +99,17 @@ def run_once():
         except Exception as err:
             print(err)
 
-    pipeline(all)
+    run(top1)
 
 
-def eval_feature_combination():
+def find_best_features():
     assert 'item_cnt_month' not in COLS_FINAL
     space = {c: hyperopt.hp.choice(c, [0, 1]) for c in COLS_FINAL}
     dct = hyperopt.pyll.stochastic.sample(space)
 
     trials = hyperopt.Trials()
     best = hyperopt.fmin(
-        fn=pipeline,
+        fn=run,
         space=space,
         algo=hyperopt.tpe.suggest,
         max_evals=600,
@@ -120,27 +121,20 @@ def eval_feature_combination():
     pprint.pprint(best)
 
 
-def pipeline(space=None):
+def run(space=None):
     assert type(space) == dict
     print(space)
 
     # PARAMS
-    RECALC_TRAIN = False
     USE_ONLY_TEST_IDS = True
-    SPARSIFY_BY = 1000
     DO_SUBMIT = True
-    LOG_DIR = pathlib.Path(__file__).parent.parent / 'logs' / datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    LOG_DIR = pathlib.Path(__file__).parent.parent.absolute() / 'logs' / datetime.datetime.now().strftime(
+        "%Y%m%d_%H%M%S")
     utils.setup_logging(LOG_DIR / "log.txt")
     # pd.options.display.max_columns = 50
 
     # init training data with features
-    if RECALC_TRAIN:
-        df_data = data.generate(sparsify_by=SPARSIFY_BY)
-        with open('train.pickle', 'wb') as f:
-            pickle.dump(df_data, f)
-    else:
-        with open('train.pickle', 'rb') as f:
-            df_data = pickle.load(f)
+    df_data = data.generate(sparsify_by=1.0, use_cache=True)
     if USE_ONLY_TEST_IDS:
         df_test = utils.read_csv('test.csv')
         mask = df_data['item_id'].isin(df_test['item_id'])
@@ -149,31 +143,25 @@ def pipeline(space=None):
     # print(df_data.head())
 
     # init model
-    # model = models.Catboost()
-    model = models.KNN()
+    model = models.Catboost()
+    # model = models.KNN() # takes too long to train
     # model = models.NN()
     # model = models.Linear()
 
     # Train and validate multiple times (similar to cross-validation)
     dcts = []
-    idxs_valid = [34] if DO_SUBMIT else [33, 32, 31]
-    for idx_valid in idxs_valid:
+    for idx_valid in [34]:  # tqdm.trange(30, 34 + 1):  # last training on 34 for later submit
         logger.info("Using idx={} for validation".format(idx_valid))
 
         # split train into [train,valid] and get X,y
-        df_train = df_data.loc[df_data['date_block_num'] == (33 if DO_SUBMIT else idx_valid), :].copy()
+        df_train = df_data.loc[df_data['date_block_num'] == (idx_valid if idx_valid < 34 else 33), :].copy()
         df_valid = df_data.loc[df_data['date_block_num'] < idx_valid, :].copy()
         Xvalid, yvalid = _getXy(df_train)
         Xtrain, ytrain = _getXy(df_valid)
 
         # pick only selected features from X. Cant do this before, because may also remove date_block_num
         if space is not None:
-            cols = []
-            for c in Xtrain.columns:
-                if c in space and space[c] == True:
-                    cols.append(c)
-                elif c in space and space[c + 'encoded'] == True:
-                    cols.append(c)
+            cols = [c for c in Xtrain.columns if space[c] == True]
             Xtrain = Xtrain.loc[:, cols]
             Xvalid = Xvalid.loc[:, cols]
 
@@ -181,7 +169,7 @@ def pipeline(space=None):
         if isinstance(model, models.SklearnInterface):
             Xtrain = model.encode_features(Xtrain, ytrain, drop_org=True)
             Xvalid = model.encode_features(Xvalid, yvalid, drop_org=True)
-            cols = Xtrain.columns.tolist()
+            cols = Xtrain.columns.tolist()  # afterwards Xtrain is not a DataFrame anymore
             scaler = sklearn.preprocessing.StandardScaler().fit(Xtrain)
             Xtrain = scaler.transform(Xtrain)
             Xvalid = scaler.transform(Xvalid)
@@ -192,18 +180,19 @@ def pipeline(space=None):
         dcts.append(dct)
 
         # save predictions for validation dataset
-        if not DO_SUBMIT:
-            yvalid_pred = model.predict(Xvalid)
-            df_valid = pd.DataFrame({'true': yvalid, 'pred': yvalid_pred})
-            path_csv = LOG_DIR / 'yvalid_{}.csv'.format(idx_valid)
-            df_valid.to_csv(path_csv, index=False)
+        yvalid_pred = model.predict(Xvalid)
+        df_valid = pd.DataFrame({'true': yvalid, 'pred': yvalid_pred})
+        path_csv = LOG_DIR / 'yvalid_{}.csv'.format(idx_valid)
+        df_valid.to_csv(path_csv, index=False)
 
     # save total validation score
     df_eval = pd.DataFrame(dcts)
     df_eval.to_csv(LOG_DIR / 'df_eval.csv')
+    logger.info(df_eval)
 
     # submit
     if DO_SUBMIT:
+        assert idx_valid == 34, "last training was not on idx_valid=34!"
         logger.info("Starting submission")
 
         # load test
@@ -212,22 +201,30 @@ def pipeline(space=None):
         df_test.loc[df_test.shop_id == 0, 'shop_id'] = 57
         df_test.loc[df_test.shop_id == 1, 'shop_id'] = 58
         df_test.loc[df_test.shop_id == 10, 'shop_id'] = 11
-        nrows_test = len(df_test)
+        Xtest, _ = _getXy(df_test)
+        nrows_test = len(Xtest)
 
         # apply features from df_data (date_block_num=34)
         if isinstance(model, models.SklearnInterface):
             df_data.loc[df_data.date_block_num == 34, 'item_cnt_month'] = float('NaN')  # to not influence mean encoding
             Xdata, ydata = _getXy(df_data)
             Xdata = model.encode_features(Xdata, ydata, drop_org=False)
-            # unencoded columns will be filtered out later via .loc[:,Xtrain.columns]
-        df_test = df_test.merge(Xdata, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
-        Xtest, _ = _getXy(df_test)
+        else:
+            Xdata, ydata = _getXy(df_data)
+        Xtest = Xtest.merge(Xdata, how='inner', on=['date_block_num', 'shop_id', 'item_id'])
         Xtest = Xtest.loc[:, cols]
-        Xtest = scaler.transform(Xtest)
+        if isinstance(model, models.SklearnInterface):
+            Xtest = scaler.transform(Xtest)
 
         # predict
         ytest = model.predict(Xtest)
+
+        # postprocess
         ytest = np.clip(ytest, 0, 20)  # clip values to [0,20], same clipping as target values
+        if False:
+            ytest *= 0.2839 / np.mean(ytest)  # known mean
+            ytest = np.clip(ytest, 0, 20)
+
         df_test = pd.DataFrame({'ID': df_test.index,
                                 'item_cnt_month': ytest,
                                 })
@@ -239,7 +236,10 @@ def pipeline(space=None):
         if nrows_test != len(ytest):
             logger.warning("ytest has {} != {} rows".format(len(ytest), nrows_test))
 
-    return df_eval['final'].mean()
+    # calculate final KPI without idx_eval==34
+    mask = df_eval['idx_valid'] < 34
+    kpi_final = df_eval.loc[mask, 'final'].mean()
+    return kpi_final
 
 
 def _getXy(df):

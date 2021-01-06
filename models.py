@@ -7,6 +7,7 @@ import sklearn.preprocessing
 import sklearn.neighbors
 import sklearn.neural_network
 import sklearn.linear_model
+import pprint
 
 import utils
 
@@ -69,11 +70,13 @@ class SklearnInterface(Interface):
         self.clf.fit(Xtrain, ytrain)
 
         # evaluate performance on validation set
+        ytrain_pred = self.predict(Xtrain)
         yvalid_pred = self.predict(Xvalid)
-        err = np.abs(yvalid - yvalid_pred).mean()
-        dct = {'MSE': err,
-               'final': err,
+        dct = {'MSE_train': utils.calc_rmse(ytrain, ytrain_pred),
+               'MSE_val':  utils.calc_rmse(yvalid, yvalid_pred),
+               'final':  utils.calc_rmse(yvalid, yvalid_pred),
                }
+        pprint.pprint(dct)
         return dct
 
     def predict(self, Xtest):
@@ -135,4 +138,8 @@ class KNN(SklearnInterface):
 class NN(SklearnInterface):
     def __init__(self):
         super(NN, self).__init__()
-        self.clf = sklearn.neural_network.MLPRegressor([500, 50, 5])
+        self.clf = sklearn.neural_network.MLPRegressor([500, 50, 5],
+                                                       verbose=True,
+                                                       # early_stopping=True,
+                                                       max_iter=1, # =num_epochs
+                                                       )

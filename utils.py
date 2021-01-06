@@ -1,5 +1,7 @@
 import functools
 import os
+import pathlib
+import numpy as np
 import sys
 import pandas as pd
 import pathlib
@@ -83,7 +85,9 @@ def setup_logging(path_logfile=None):
     log.addHandler(sh)
 
     if path_logfile != None:
-        os.makedirs(os.path.dirname(path_logfile), exist_ok=True)
+        path_logdir = pathlib.Path(path_logfile).parent
+        path_logdir = path_logdir.absolute()
+        path_logdir.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(path_logfile)
         fh.setFormatter(format)
         log.addHandler(fh)
@@ -141,3 +145,17 @@ def encode_category_using_smoothing(df, colname, tarname):
     # NaNs can still occur if all targets are NaN for a given category. Then, replace with globalmean
     encoded.replace(float('NaN'), mean_global, inplace=True)
     return encoded
+
+
+def calc_rmse(true, pred):
+    """
+    Calculate root mean square error
+
+    :param true:
+    :param pred:
+    :return:
+    """
+    se = (true-pred)**2
+    mse = np.mean(se)
+    rmse = np.sqrt(mse)
+    return rmse

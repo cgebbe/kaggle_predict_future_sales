@@ -1,8 +1,8 @@
 .ipynb_checkpoints/
 catboost_info/
+catboost/
 outputs/
 _old/
 __pycache__/
 *.pickle
-catboost/
 df_eval*
