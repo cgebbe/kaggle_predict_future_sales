@@ -10,6 +10,8 @@ Given the sales history from ~60 shops,  ~23000 items and 33 months plus some au
 
 The catboost regressor can predict the monthly sales with a root mean squared error (RMSE) of 0.929. This results corresponds to the  ~35% percentile of the kaggle leaderboard, where the best submission has an RMSE of 0.75 and the 10th best submission has an RMSE of 0.82 (as of 01.01.2021).
 
+> Well done! Your solution gets the maximum grade! But, of course, the solution can be improved even further. Your public and private LB scores are: 0.929198 and 0.925085.
+
 
 
 # FAQ
