@@ -1,6 +1,8 @@
 # About
 
-This is the code for the final project of the coursera course "How to win a data science competition". The final project is hosted as a [kaggle competition](https://www.kaggle.com/c/competitive-data-science-final-project).
+This is the code for the [kaggle competition "Predict future sales"](https://www.kaggle.com/c/competitive-data-science-final-project). It also serves simultaneously as the final project of the [coursera course "How to win a data science competition"]().
+
+<img src="title.png" height="400">
 
 ### Problem description
 
